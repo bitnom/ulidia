@@ -1,6 +1,3 @@
-Here's a README.md for the ulidia repository:
-
-```markdown
 # Ulidia
 
 Ulidia is a robust, PostgreSQL-native implementation of Universally Unique Lexicographically Sortable Identifiers (ULIDs) designed for use with Supabase and other PostgreSQL-based projects.
@@ -81,6 +78,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Inspired by the [ULID spec](https://github.com/ulid/spec)
 - Uses PostgreSQL's `pgcrypto` for secure random number generation
-```
-
-This README provides an overview of the project, installation instructions, usage examples, a list of main functions, information about testing, limitations, contribution guidelines, and licensing information. It gives potential users and contributors a clear understanding of what Ulidia is and how to use it.
