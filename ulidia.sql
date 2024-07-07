@@ -1,4 +1,3 @@
--- Ensure pgcrypto is available
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Create a custom ULID type
@@ -18,25 +17,107 @@ CREATE TYPE ulid (
     PASSEDBYVALUE
 );
 
--- Comparison operators for ULID
-CREATE FUNCTION ulid_lt(ulid, ulid) RETURNS boolean AS 'uuid_lt' LANGUAGE internal IMMUTABLE STRICT;
-CREATE FUNCTION ulid_le(ulid, ulid) RETURNS boolean AS 'uuid_le' LANGUAGE internal IMMUTABLE STRICT;
-CREATE FUNCTION ulid_eq(ulid, ulid) RETURNS boolean AS 'uuid_eq' LANGUAGE internal IMMUTABLE STRICT;
-CREATE FUNCTION ulid_ge(ulid, ulid) RETURNS boolean AS 'uuid_ge' LANGUAGE internal IMMUTABLE STRICT;
-CREATE FUNCTION ulid_gt(ulid, ulid) RETURNS boolean AS 'uuid_gt' LANGUAGE internal IMMUTABLE STRICT;
-CREATE FUNCTION ulid_ne(ulid, ulid) RETURNS boolean AS 'uuid_ne' LANGUAGE internal IMMUTABLE STRICT;
+-- Comparison functions
+CREATE OR REPLACE FUNCTION ulid_lt(ulid, ulid) RETURNS boolean AS $$
+BEGIN
+    RETURN $1::uuid < $2::uuid;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
 
-CREATE OPERATOR < (LEFTARG = ulid, RIGHTARG = ulid, PROCEDURE = ulid_lt);
-CREATE OPERATOR <= (LEFTARG = ulid, RIGHTARG = ulid, PROCEDURE = ulid_le);
-CREATE OPERATOR = (LEFTARG = ulid, RIGHTARG = ulid, PROCEDURE = ulid_eq);
-CREATE OPERATOR >= (LEFTARG = ulid, RIGHTARG = ulid, PROCEDURE = ulid_ge);
-CREATE OPERATOR > (LEFTARG = ulid, RIGHTARG = ulid, PROCEDURE = ulid_gt);
-CREATE OPERATOR <> (LEFTARG = ulid, RIGHTARG = ulid, PROCEDURE = ulid_ne);
+CREATE OR REPLACE FUNCTION ulid_le(ulid, ulid) RETURNS boolean AS $$
+BEGIN
+    RETURN $1::uuid <= $2::uuid;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION ulid_eq(ulid, ulid) RETURNS boolean AS $$
+BEGIN
+    RETURN $1::uuid = $2::uuid;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION ulid_ne(ulid, ulid) RETURNS boolean AS $$
+BEGIN
+    RETURN $1::uuid <> $2::uuid;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION ulid_ge(ulid, ulid) RETURNS boolean AS $$
+BEGIN
+    RETURN $1::uuid >= $2::uuid;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION ulid_gt(ulid, ulid) RETURNS boolean AS $$
+BEGIN
+    RETURN $1::uuid > $2::uuid;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+-- Comparison operators
+CREATE OPERATOR < (
+    LEFTARG = ulid,
+    RIGHTARG = ulid,
+    PROCEDURE = ulid_lt,
+    COMMUTATOR = >,
+    NEGATOR = >=
+);
+
+CREATE OPERATOR <= (
+    LEFTARG = ulid,
+    RIGHTARG = ulid,
+    PROCEDURE = ulid_le,
+    COMMUTATOR = >=,
+    NEGATOR = >
+);
+
+CREATE OPERATOR = (
+    LEFTARG = ulid,
+    RIGHTARG = ulid,
+    PROCEDURE = ulid_eq,
+    COMMUTATOR = =,
+    NEGATOR = <>
+);
+
+CREATE OPERATOR <> (
+    LEFTARG = ulid,
+    RIGHTARG = ulid,
+    PROCEDURE = ulid_ne,
+    COMMUTATOR = <>,
+    NEGATOR = =
+);
+
+CREATE OPERATOR >= (
+    LEFTARG = ulid,
+    RIGHTARG = ulid,
+    PROCEDURE = ulid_ge,
+    COMMUTATOR = <=,
+    NEGATOR = <
+);
+
+CREATE OPERATOR > (
+    LEFTARG = ulid,
+    RIGHTARG = ulid,
+    PROCEDURE = ulid_gt,
+    COMMUTATOR = <,
+    NEGATOR = <=
+);
 
 -- B-tree index support
-CREATE FUNCTION ulid_cmp(ulid, ulid) RETURNS int4 AS 'uuid_cmp' LANGUAGE internal IMMUTABLE STRICT;
+CREATE FUNCTION ulid_cmp(ulid, ulid) RETURNS int4 AS $$
+BEGIN
+    IF $1 < $2 THEN
+        RETURN -1;
+    ELSIF $1 > $2 THEN
+        RETURN 1;
+    ELSE
+        RETURN 0;
+    END IF;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
 
-CREATE OPERATOR CLASS ulid_ops DEFAULT FOR TYPE ulid USING btree AS
+CREATE OPERATOR CLASS ulid_ops
+DEFAULT FOR TYPE ulid USING btree AS
     OPERATOR 1 <,
     OPERATOR 2 <=,
     OPERATOR 3 =,
@@ -170,6 +251,8 @@ DECLARE
     duration interval;
     prev_ulid ulid;
     current_ulid ulid;
+    ulid1 ulid;
+    ulid2 ulid;
 BEGIN
     -- Test generate_ulid
     test_ulid := generate_ulid();
@@ -241,6 +324,28 @@ BEGIN
     ASSERT (SELECT COUNT(DISTINCT id) FROM concurrent_ulids) = 1000, 'All concurrently generated ULIDs should be unique';
     RETURN NEXT 'Concurrency test: OK';
 
+    -- Test comparison operators
+    ulid1 := generate_ulid();
+    PERFORM pg_sleep(0.001);  -- Ensure a small time difference
+    ulid2 := generate_ulid();
+
+    ASSERT ulid1 < ulid2, 'Earlier ULID should be less than later ULID';
+    ASSERT ulid1 <= ulid2, 'Earlier ULID should be less than or equal to later ULID';
+    ASSERT ulid1 <> ulid2, 'Different ULIDs should not be equal';
+    ASSERT ulid2 > ulid1, 'Later ULID should be greater than earlier ULID';
+    ASSERT ulid2 >= ulid1, 'Later ULID should be greater than or equal to earlier ULID';
+    ASSERT ulid1 = ulid1, 'ULID should be equal to itself';
+
+    RETURN NEXT 'Comparison operators: OK';
+
+    -- Test sorting with the new operators
+    CREATE TEMPORARY TABLE test_ulid_sort (id ulid PRIMARY KEY);
+    INSERT INTO test_ulid_sort (id) VALUES (ulid1), (ulid2), (generate_ulid());
+    ASSERT (SELECT COUNT(*) FROM (SELECT id FROM test_ulid_sort ORDER BY id) AS sorted) = 3, 'ULIDs should be sortable with new operators';
+    RETURN NEXT 'ULID sorting with new operators: OK';
+
+    DROP TABLE test_ulid_sort;
+
     -- Extended performance test
     start_time := CLOCK_TIMESTAMP();
     FOR i IN 1..1000000 LOOP
@@ -269,3 +374,10 @@ COMMENT ON FUNCTION string_to_ulid(text) IS 'Converts a 26-character string repr
 COMMENT ON FUNCTION ulid_to_timestamp(ulid) IS 'Extracts the timestamp from a ULID as a timestamp with time zone';
 COMMENT ON FUNCTION is_valid_ulid(text) IS 'Checks if a string is a valid 26-character ULID representation';
 COMMENT ON FUNCTION compare_ulids(ulid, ulid) IS 'Compares two ULIDs. Returns -1 if a < b, 1 if a > b, and 0 if a = b';
+COMMENT ON FUNCTION ulid_lt(ulid, ulid) IS 'Returns true if the first ULID is less than the second';
+COMMENT ON FUNCTION ulid_le(ulid, ulid) IS 'Returns true if the first ULID is less than or equal to the second';
+COMMENT ON FUNCTION ulid_eq(ulid, ulid) IS 'Returns true if the two ULIDs are equal';
+COMMENT ON FUNCTION ulid_ne(ulid, ulid) IS 'Returns true if the two ULIDs are not equal';
+COMMENT ON FUNCTION ulid_ge(ulid, ulid) IS 'Returns true if the first ULID is greater than or equal to the second';
+COMMENT ON FUNCTION ulid_gt(ulid, ulid) IS 'Returns true if the first ULID is greater than the second';
+COMMENT ON FUNCTION ulid_cmp(ulid, ulid) IS 'Compares two ULIDs, returning -1, 0, or 1';
